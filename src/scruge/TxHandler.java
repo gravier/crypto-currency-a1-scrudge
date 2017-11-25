@@ -1,5 +1,7 @@
 package scruge;
 
+import java.util.*;
+
 public class TxHandler {
 
     private UTXOPool _pool;
@@ -25,6 +27,9 @@ public class TxHandler {
         if(tx == null) return false;
         if(!verifyIsPoolOutputEnough(tx))  return false;
         if(!verifySignatures(tx)) return false;
+        if(!verifyOutputClaims(tx)) return false;
+        if(!verifyNonNegative(tx)) return false;
+        if(!verifySumInputMatchOutput(tx)) return false;
         return true;
     }
 
@@ -43,22 +48,74 @@ public class TxHandler {
 
     private boolean verifySignatures(Transaction tx) {
         if(tx.getInputs() == null || tx.getInputs().isEmpty()) return false;
+        int ind = 0;
         for(Transaction.Input i : tx.getInputs()){
             UTXO matchHash = new UTXO(i.prevTxHash, i.outputIndex);
             Transaction.Output matchOutput = _pool.getTxOutput(matchHash);
             if(matchOutput == null) return false;
-            if(!Crypto.verifySignature(matchOutput.address, tx.getRawTx(), i.signature)) return false;
+            if(i.signature == null) return false;
+            if(!Crypto.verifySignature(matchOutput.address, tx.getRawDataToSign(ind++), i.signature)) return false;
         }
         return true;
     }
 
-        /**
-         * Handles each epoch by receiving an unordered array of proposed transactions, checking each
-         * transaction for correctness, returning a mutually valid array of accepted transactions, and
-         * updating the current scruge.UTXO pool as appropriate.
-         */
-    public Transaction[] handleTxs(Transaction[] possibleTxs) {
-        return null;
+    private boolean verifyOutputClaims(Transaction tx) {
+        if(tx.getInputs() == null || tx.getInputs().isEmpty()) return false;
+        int ind = 0;
+        Set<UTXO> claims = new HashSet<>();
+        for(Transaction.Input i : tx.getInputs()){
+            UTXO matchHash = new UTXO(i.prevTxHash, i.outputIndex);
+            Transaction.Output matchOutput = _pool.getTxOutput(matchHash);
+            if(matchOutput == null) return false;
+            if(claims.contains(matchHash)) return false;
+            claims.add(matchHash);
+        }
+        return true;
     }
 
+    private boolean verifyNonNegative(Transaction tx) {
+        for(Transaction.Output o : tx.getOutputs()){
+            if(o.value < 0) return false;
+        }
+        return true;
+    }
+
+    private boolean verifySumInputMatchOutput(Transaction tx) {
+        if(tx.getInputs() == null || tx.getInputs().isEmpty()) return false;
+        double inputSum = 0;
+        double outputSum = 0;
+        for(Transaction.Input i : tx.getInputs()){
+            UTXO matchHash = new UTXO(i.prevTxHash, i.outputIndex);
+            Transaction.Output matchOutput = _pool.getTxOutput(matchHash);
+            if(matchOutput == null) return false;
+            inputSum += matchOutput.value;
+        }
+        for(Transaction.Output o : tx.getOutputs()){
+            outputSum += o.value;
+        }
+        return inputSum >= outputSum;
+    }
+
+    /**
+     * Handles each epoch by receiving an unordered array of proposed transactions, checking each
+     * transaction for correctness, returning a mutually valid array of accepted transactions, and
+     * updating the current scruge.UTXO pool as appropriate.
+     */
+    public Transaction[] handleTxs(Transaction[] possibleTxs) {
+        List<Transaction> validTrxs = new ArrayList<>();
+        for(Transaction trx : possibleTxs){
+            if(isValidTx(trx)) {
+                trx.finalize();
+                addToPool(trx);
+                validTrxs.add(trx);
+            }
+        }
+        Transaction[] resultTxs = new Transaction[validTrxs.size()];
+        return validTrxs.toArray(resultTxs);
+    }
+
+    private void addToPool(Transaction trx){
+        for(int i=0; i<trx.numOutputs(); i++)
+            _pool.addUTXO(new UTXO(trx.getHash(), i), trx.getOutput(i));
+    }
 }
